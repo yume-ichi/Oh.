@@ -136,9 +136,10 @@ function detect(){
  return sr/tt;
 }
 // スペクトルから基音を推定(倍音の和)
-function detectS(){
+function detectS(lo,hi){
  const sr=ac.sampleRate,n=data.length,bh=sr/2/n;
- const k0=Math.max(1,Math.floor(50/bh)),k1=Math.min(n-2,Math.floor(4000/bh));
+ const k0=Math.max(1,Math.floor(Math.max(lo,30)/bh)),k1=Math.min(n-2,Math.ceil(hi/bh));
+ if(k1<=k0)return 0;
  let sum=0,peak=-1e9;
  for(let k=k0;k<=k1;k++){const v=data[k];sum+=v;if(v>peak)peak=v;}
  if(!isFinite(peak)||peak-sum/(k1-k0+1)<(+$('pth').value||20))return 0;
@@ -153,10 +154,16 @@ function detectS(){
  }
  if(bk<0)return 0;
  const a=sc[bk-1]||0,b=sc[bk],c=sc[bk+1]||0,den=a-2*b+c;
- return (den?bk+0.5*(a-c)/den:bk)*bh;
+ const f0=(den?bk+0.5*(a-c)/den:bk)*bh;
+ // 範囲より下に本当の基音(1/2〜1/4)があれば、これは倍音なので除外
+ const th=+$('pth').value||20,mean=sum/(k1-k0+1);
+ const pk=x=>{const kc=Math.round(x);let m=-1e9;for(let i=kc-1;i<=kc+1;i++)if(i>0&&i<n&&data[i]>m)m=data[i];return m;};
+ const f0db=pk(f0/bh);
+ for(let d=2;d<=4;d++){const g=f0/d;if(g<30)break;const gd=pk(g/bh);if(gd>mean+th&&gd>f0db-15)return 0;}
+ return f0;
 }
 function updatePitch(sp_,lo,hi){
- const f=detectS();
+ const f=detectS(lo,hi);
  if(!f){lastF=0;$('pnow').textContent='基音: ―';return;}
  const m=69+12*Math.log2(f/440),r=Math.round(m),c=Math.round((m-r)*100);
  $('pnow').textContent='基音: '+f.toFixed(1)+' Hz  '+noteName(f)+' ('+(c>=0?'+':'')+c+'セント)';
