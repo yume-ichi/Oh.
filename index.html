@@ -33,6 +33,7 @@ small{opacity:.7}
 <div id="drop" class="card">動画・音声ファイルをここにドロップ、または
 <input type="file" id="file" accept="video/*,audio/*"></div>
 <div class="card"><video id="v" controls playsinline></video></div>
+<div class="card" id="pv"><span id="pnow" style="font-size:18px;font-weight:600">基音: ―</span>　<small id="prange"></small>　<button id="preset">範囲リセット</button></div>
 <div class="card stage">
 <canvas id="sp" width="1100" height="320"></canvas>
 <canvas id="ov" width="1100" height="320"></canvas>
@@ -46,6 +47,7 @@ small{opacity:.7}
 <label>レンジ<input type="number" id="range" value="90" min="10"></label>
 <label>速度(px/フレーム)<input type="number" id="speed" value="2" min="1" max="8"></label>
 <label><input type="checkbox" id="note" checked>音名を表示</label>
+<label><input type="checkbox" id="pitch" checked>基音を表示</label>
 <button id="mic">マイク開始</button>
 <label>解析する音声<select id="src"><option value="video">動画</option><option value="mic">マイク</option><option value="mix">動画＋マイク</option></select></label>
 <span id="msg" style="color:#e5484d;font-size:13px"></span>
@@ -55,7 +57,7 @@ small{opacity:.7}
 const $=id=>document.getElementById(id);
 const v=$('v'),sp=$('sp'),ov=$('ov'),sctx=sp.getContext('2d'),octx=ov.getContext('2d');
 const W=sp.width,H=sp.height;
-let ac,an,data,srcNode,vg,mg,micNode,micStream;
+let ac,an,data,srcNode,vg,mg,micNode,micStream,pa,tbuf;
 // カラーマップ
 const lut=[];
 (function(){const st=[[0,[0,0,0]],[.25,[40,0,110]],[.5,[190,30,90]],[.75,[250,160,20]],[1,[255,255,230]]];
@@ -70,7 +72,8 @@ function setup(){
  srcNode.connect(vg);vg.connect(an);
  srcNode.connect(ac.destination);
  mg.connect(an);
- const sil=ac.createGain();sil.gain.value=0;an.connect(sil);sil.connect(ac.destination);
+ pa=ac.createAnalyser();pa.fftSize=4096;tbuf=new Float32Array(4096);vg.connect(pa);mg.connect(pa);
+ const sil=ac.createGain();sil.gain.value=0;an.connect(sil);pa.connect(sil);sil.connect(ac.destination);
  applyFFT();applySrc();
 }
 function applySrc(){
@@ -108,6 +111,38 @@ function frame(){
   for(let x=0;x<sp_;x++){const i=(y*sp_+x)*4;img.data[i]=c[0];img.data[i+1]=c[1];img.data[i+2]=c[2];img.data[i+3]=255;}
  }
  sctx.putImageData(img,W-sp_,0);
+ if($('pitch').checked&&++fc%2===0)updatePitch(sp_,lo,hi);
+}
+let fc=0,pmin=1e9,pmax=0,lastF=0;
+// 基音検出(YIN法)
+function detect(){
+ pa.getFloatTimeDomainData(tbuf);
+ const sr=ac.sampleRate,tmax=Math.floor(sr/50),tmin=Math.max(2,Math.floor(sr/4000));
+ const Wn=Math.min(2048,tbuf.length-tmax-1);
+ if(Wn<512)return 0;
+ let e=0;for(let j=0;j<Wn;j++)e+=tbuf[j]*tbuf[j];
+ if(Math.sqrt(e/Wn)<0.01)return 0;
+ const d=new Float32Array(tmax+1);
+ for(let t=1;t<=tmax;t++){let s=0;for(let j=0;j<Wn;j++){const x=tbuf[j]-tbuf[j+t];s+=x*x;}d[t]=s;}
+ let run=0;const dn=new Float32Array(tmax+1);dn[0]=1;
+ for(let t=1;t<=tmax;t++){run+=d[t];dn[t]=run?d[t]*t/run:1;}
+ let tau=-1;
+ for(let t=tmin;t<tmax;t++){if(dn[t]<0.15){while(t+1<tmax&&dn[t+1]<dn[t])t++;tau=t;break;}}
+ if(tau<0){let m=1e9,mt=-1;for(let t=tmin;t<tmax;t++)if(dn[t]<m){m=dn[t];mt=t;}if(m<0.3)tau=mt;}
+ if(tau<0)return 0;
+ const a=dn[tau-1],b=dn[tau],c=dn[tau+1],den=a-2*b+c;
+ const tt=den?tau+0.5*(a-c)/den:tau;
+ return sr/tt;
+}
+function updatePitch(sp_,lo,hi){
+ const f=detect();
+ if(!f){lastF=0;$('pnow').textContent='基音: ―';return;}
+ const m=69+12*Math.log2(f/440),r=Math.round(m),c=Math.round((m-r)*100);
+ $('pnow').textContent='基音: '+f.toFixed(1)+' Hz  '+noteName(f)+' ('+(c>=0?'+':'')+c+'セント)';
+ const stable=lastF&&Math.abs(f/lastF-1)<0.03;lastF=f;
+ if(stable){pmin=Math.min(pmin,f);pmax=Math.max(pmax,f);
+  $('prange').textContent='最低 '+pmin.toFixed(1)+' Hz '+noteName(pmin)+' / 最高 '+pmax.toFixed(1)+' Hz '+noteName(pmax);}
+ if(f>=lo&&f<=hi){const y=H-1-(f-lo)/(hi-lo)*(H-1);sctx.fillStyle='#7fe3ff';sctx.fillRect(W-sp_*2,Math.round(y)-1,sp_*2,3);}
 }
 requestAnimationFrame(frame);
 // オーバーレイ（マーク・カーソル）
@@ -149,6 +184,7 @@ document.addEventListener('drop',e=>load(e.dataTransfer.files[0]));
 v.addEventListener('play',()=>{setup();if(ac.state==='suspended')ac.resume();});
 v.addEventListener('seeked',clear);
 $('src').addEventListener('change',applySrc);
+$('preset').addEventListener('click',()=>{pmin=1e9;pmax=0;lastF=0;$('prange').textContent='';});
 $('mic').addEventListener('click',async()=>{
  if(micNode){
   micStream.getTracks().forEach(t=>t.stop());
