@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>動画付きスペクトログラムビューア</title>
+<style>
+:root{--bg:#f6f6f4;--fg:#1d1d1b;--card:#fff;--line:#d5d5d0;--ac:#2563eb;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#17181a;--fg:#e8e8e6;--card:#222427;--line:#3a3d41;--ac:#6ea0ff}}
+:root[data-theme="dark"]{--bg:#17181a;--fg:#e8e8e6;--card:#222427;--line:#3a3d41;--ac:#6ea0ff}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,"Hiragino Sans","Yu Gothic",sans-serif}
+main{max-width:1100px;margin:0 auto;padding:16px;display:grid;gap:12px}
+h1{font-size:18px;margin:0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px}
+#drop{border:2px dashed var(--line);text-align:center;padding:10px;border-radius:10px}
+#drop.over{border-color:var(--ac)}
+video{width:100%;max-height:42vh;background:#000;border-radius:8px;display:block}
+.stage{position:relative}
+canvas{width:100%;height:320px;display:block;background:#000;border-radius:8px}
+#ov{position:absolute;left:12px;top:12px;width:calc(100% - 24px);background:transparent;pointer-events:auto}
+.set{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center}
+label{display:flex;gap:6px;align-items:center;font-size:13px}
+input[type=number],input[type=text],select{background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:3px 6px;font:inherit}
+input[type=number]{width:80px}
+input[type=text]{width:140px}
+small{opacity:.7}
+</style>
+</head>
+<body>
+<main>
+<h1>動画付きスペクトログラムビューア</h1>
+<div id="drop" class="card">動画・音声ファイルをここにドロップ、または
+<input type="file" id="file" accept="video/*,audio/*"></div>
+<div class="card"><video id="v" controls playsinline></video></div>
+<div class="card" id="pv"><span id="pnow" style="font-size:18px;font-weight:600">基音: ―</span>　<small id="prange"></small>　<button id="preset">範囲リセット</button></div>
+<div class="card stage">
+<canvas id="sp" width="1100" height="320"></canvas>
+<canvas id="ov" width="1100" height="320"></canvas>
+</div>
+<div class="card set">
+<label>周波数マーク<input type="text" id="marks" placeholder="例: 440 1000"></label>
+<label>周波数下限<input type="number" id="fmin" value="0" min="0"></label>
+<label>周波数上限<input type="number" id="fmax" value="0" min="0"><small>(0=自動)</small></label>
+<label>FFT<select id="fft"><option>1024</option><option>2048</option><option selected>4096</option><option>8192</option><option>16384</option><option>32768</option></select></label>
+<label>ゲイン<input type="number" id="gain" value="20"></label>
+<label>レンジ<input type="number" id="range" value="90" min="10"></label>
+<label>速度(px/フレーム)<input type="number" id="speed" value="2" min="1" max="8"></label>
+<label><input type="checkbox" id="note" checked>音名を表示</label>
+<label><input type="checkbox" id="pitch" checked>基音を表示</label>
+<label>基音しきい値(dB)<input type="number" id="pth" value="20" min="3"></label>
+<button id="mic">マイク開始</button>
+<label>解析する音声<select id="src"><option value="video">動画</option><option value="mic">マイク</option><option value="mix">動画＋マイク</option></select></label>
+<span id="msg" style="color:#e5484d;font-size:13px"></span>
+</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const v=$('v'),sp=$('sp'),ov=$('ov'),sctx=sp.getContext('2d'),octx=ov.getContext('2d');
+const W=sp.width,H=sp.height;
+let ac,an,data,srcNode,vg,mg,micNode,micStream,pa,tbuf;
+// カラーマップ
+const lut=[];
+(function(){const st=[[0,[0,0,0]],[.25,[40,0,110]],[.5,[190,30,90]],[.75,[250,160,20]],[1,[255,255,230]]];
+for(let i=0;i<256;i++){const t=i/255;let k=1;while(k<st.length-1&&t>st[k][0])k++;
+const a=st[k-1],b=st[k],f=(t-a[0])/(b[0]-a[0]);lut.push(a[1].map((c,j)=>Math.round(c+(b[1][j]-c)*f)));}})();
+function setup(){
+ if(ac)return;
+ ac=new (window.AudioContext||window.webkitAudioContext)();
+ an=ac.createAnalyser();an.smoothingTimeConstant=0;
+ srcNode=ac.createMediaElementSource(v);
+ vg=ac.createGain();mg=ac.createGain();
+ srcNode.connect(vg);vg.connect(an);
+ srcNode.connect(ac.destination);
+ mg.connect(an);
+ pa=ac.createAnalyser();pa.fftSize=4096;tbuf=new Float32Array(4096);vg.connect(pa);mg.connect(pa);
+ const sil=ac.createGain();sil.gain.value=0;an.connect(sil);pa.connect(sil);sil.connect(ac.destination);
+ applyFFT();applySrc();
+}
+function applySrc(){
+ if(!vg)return;
+ const s=$('src').value;
+ vg.gain.value=s==='mic'?0:1;
+ mg.gain.value=s==='video'?0:1;
+}
+function active(){
+ const s=$('src').value;
+ return (micNode&&s!=='video')||(!v.paused&&!v.ended);
+}
+function applyFFT(){if(!an)return;an.fftSize=+$('fft').value;data=new Float32Array(an.frequencyBinCount);}
+function range(){
+ const nyq=ac?ac.sampleRate/2:22050;
+ const lo=Math.max(0,+$('fmin').value||0);
+ let hi=+$('fmax').value||nyq;hi=Math.min(hi,nyq);
+ return [Math.min(lo,hi-1),hi,nyq];
+}
+function clear(){sctx.fillStyle='#000';sctx.fillRect(0,0,W,H);}
+clear();
+function frame(){
+ requestAnimationFrame(frame);
+ if(!an||!active())return;
+ an.getFloatFrequencyData(data);
+ const [lo,hi,nyq]=range(),n=data.length,gain=+$('gain').value,rg=+$('range').value||90;
+ const sp_=Math.max(1,Math.min(8,+$('speed').value||2));
+ sctx.drawImage(sp,-sp_,0);
+ const img=sctx.createImageData(sp_,H);
+ for(let y=0;y<H;y++){
+  const f=hi-(hi-lo)*(y/(H-1));
+  const bin=Math.min(n-1,Math.round(f/nyq*n));
+  let t=(data[bin]+rg+gain)/rg;t=t<0?0:t>1?1:t;
+  const c=lut[Math.round(t*255)];
+  for(let x=0;x<sp_;x++){const i=(y*sp_+x)*4;img.data[i]=c[0];img.data[i+1]=c[1];img.data[i+2]=c[2];img.data[i+3]=255;}
+ }
+ sctx.putImageData(img,W-sp_,0);
+ if($('pitch').checked&&++fc%2===0)updatePitch(sp_,lo,hi);
+}
+let fc=0,pmin=1e9,pmax=0,lastF=0;
+// 基音検出(YIN法)
+function detect(){
+ pa.getFloatTimeDomainData(tbuf);
+ const sr=ac.sampleRate,tmax=Math.floor(sr/50),tmin=Math.max(2,Math.floor(sr/4000));
+ const Wn=Math.min(2048,tbuf.length-tmax-1);
+ if(Wn<512)return 0;
+ let e=0;for(let j=0;j<Wn;j++)e+=tbuf[j]*tbuf[j];
+ if(Math.sqrt(e/Wn)<0.01)return 0;
+ const d=new Float32Array(tmax+1);
+ for(let t=1;t<=tmax;t++){let s=0;for(let j=0;j<Wn;j++){const x=tbuf[j]-tbuf[j+t];s+=x*x;}d[t]=s;}
+ let run=0;const dn=new Float32Array(tmax+1);dn[0]=1;
+ for(let t=1;t<=tmax;t++){run+=d[t];dn[t]=run?d[t]*t/run:1;}
+ let tau=-1;
+ for(let t=tmin;t<tmax;t++){if(dn[t]<0.15){while(t+1<tmax&&dn[t+1]<dn[t])t++;tau=t;break;}}
+ if(tau<0){let m=1e9,mt=-1;for(let t=tmin;t<tmax;t++)if(dn[t]<m){m=dn[t];mt=t;}if(m<0.3)tau=mt;}
+ if(tau<0)return 0;
+ const a=dn[tau-1],b=dn[tau],c=dn[tau+1],den=a-2*b+c;
+ const tt=den?tau+0.5*(a-c)/den:tau;
+ return sr/tt;
+}
+// スペクトルから基音を推定(倍音の和)
+function detectS(lo,hi){
+ const sr=ac.sampleRate,n=data.length,bh=sr/2/n;
+ const k0=Math.max(1,Math.floor(Math.max(lo,30)/bh)),k1=Math.min(n-2,Math.ceil(hi/bh));
+ if(k1<=k0)return 0;
+ let sum=0,peak=-1e9;
+ for(let k=k0;k<=k1;k++){const v=data[k];sum+=v;if(v>peak)peak=v;}
+ if(!isFinite(peak)||peak-sum/(k1-k0+1)<(+$('pth').value||20))return 0;
+ const mag=new Float32Array(n);
+ for(let k=0;k<n;k++)mag[k]=Math.pow(10,data[k]/20);
+ const sc=new Float32Array(k1+2);
+ let best=0,bk=-1;
+ for(let k=k0;k<=k1;k++){
+  let s=0,w=1;
+  for(let h=1;h<=6;h++){const kk=Math.round(k*h);if(kk>=n-1)break;s+=w*Math.max(mag[kk-1],mag[kk],mag[kk+1]);w*=0.8;}
+  sc[k]=s;if(s>best){best=s;bk=k;}
+ }
+ if(bk<0)return 0;
+ const a=sc[bk-1]||0,b=sc[bk],c=sc[bk+1]||0,den=a-2*b+c;
+ const f0=(den?bk+0.5*(a-c)/den:bk)*bh;
+ // 範囲より下に本当の基音(1/2〜1/4)があれば、これは倍音なので除外
+ const th=+$('pth').value||20,mean=sum/(k1-k0+1);
+ const pk=x=>{const kc=Math.round(x);let m=-1e9;for(let i=kc-1;i<=kc+1;i++)if(i>0&&i<n&&data[i]>m)m=data[i];return m;};
+ const f0db=pk(f0/bh);
+ for(let d=2;d<=4;d++){const g=f0/d;if(g<30)break;const gd=pk(g/bh);if(gd>mean+th&&gd>f0db-15)return 0;}
+ return f0;
+}
+function updatePitch(sp_,lo,hi){
+ const f=detectS(lo,hi);
+ if(!f){lastF=0;$('pnow').textContent='基音: ―';return;}
+ const m=69+12*Math.log2(f/440),r=Math.round(m),c=Math.round((m-r)*100);
+ $('pnow').textContent='基音: '+f.toFixed(1)+' Hz  '+noteLong(f)+' ('+(c>=0?'+':'')+c+'セント)';
+ const stable=lastF&&Math.abs(f/lastF-1)<0.03;lastF=f;
+ if(stable){pmin=Math.min(pmin,f);pmax=Math.max(pmax,f);
+  $('prange').textContent='最低 '+pmin.toFixed(1)+' Hz '+noteName(pmin)+' / 最高 '+pmax.toFixed(1)+' Hz '+noteName(pmax);}
+ if(f>=lo&&f<=hi){const y=H-1-(f-lo)/(hi-lo)*(H-1);sctx.fillStyle='#7fe3ff';sctx.fillRect(W-sp_*2,Math.round(y)-1,sp_*2,3);}
+}
+requestAnimationFrame(frame);
+// オーバーレイ（マーク・カーソル）
+const names=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+function noteName(f){if(f<=0)return'';const m=Math.round(69+12*Math.log2(f/440));return names[((m%12)+12)%12]+(Math.floor(m/12)-1);}
+// 音名の別表記: E5 / E⁵ / E’’’’’ / hihihiE 、 ,,,,,C / lowlowlowlowC / C-1
+function noteLong(f){
+ if(f<=0)return'';
+ const m=Math.round(69+12*Math.log2(f/440)),o=Math.floor(m/12)-1,n=names[((m%12)+12)%12];
+ const sup=String(o-3).replace(/-/g,'⁻').replace(/\d/g,d=>'⁰¹²³⁴⁵⁶⁷⁸⁹'[d]);
+ const forms=[n+o];
+ if(o>=4){forms.push(n+sup,n.toLowerCase()+'’'.repeat(o-3),...(o>4?[n+'’'.repeat(o-3)]:[]));}
+ else{if(o===3)forms.push(n.toLowerCase());else{forms.push(','.repeat(Math.max(0,2-o))+n);if(o<2)forms.push(n[0].repeat(3-o)+n.slice(1));}}
+ const g=Math.floor((m-45)/12);
+ if(g<0)forms.push('low'.repeat(-g)+n);else if(g<2)forms.push('Mid'+(g+1)+n);else forms.push('hi'.repeat(g-1)+n);
+ return forms.join(' / ');
+}
+let mouse=null;
+function drawOv(){
+ octx.clearRect(0,0,W,H);
+ const [lo,hi]=range();
+ const yOf=f=>H-1-(f-lo)/(hi-lo)*(H-1);
+ octx.font='12px sans-serif';octx.lineWidth=1;
+ ($('marks').value.split(/[\s,]+/).map(Number).filter(f=>f>0&&f>=lo&&f<=hi)).forEach(f=>{
+  const y=yOf(f);octx.strokeStyle='rgba(80,220,255,.8)';octx.beginPath();octx.moveTo(0,y);octx.lineTo(W,y);octx.stroke();
+  octx.fillStyle='#7fe3ff';octx.fillText(f+' Hz',4,y-3);});
+ if(mouse){
+  const f=lo+(hi-lo)*(1-mouse.y/(H-1)),y=mouse.y;
+  octx.strokeStyle='rgba(255,255,255,.7)';octx.setLineDash([4,4]);octx.beginPath();octx.moveTo(0,y);octx.lineTo(W,y);octx.stroke();octx.setLineDash([]);
+  const label=Math.round(f)+' Hz'+($('note').checked?'  '+noteLong(f):'');
+  octx.fillStyle='#fff';const tw=octx.measureText(label).width;octx.fillText(label,Math.max(4,Math.min(mouse.x+8,W-tw-6)),y<16?y+16:y-5);
+ }
+}
+ov.addEventListener('mousemove',e=>{const r=ov.getBoundingClientRect();mouse={x:(e.clientX-r.left)*W/r.width,y:(e.clientY-r.top)*H/r.height};drawOv();});
+ov.addEventListener('mouseleave',()=>{mouse=null;drawOv();});
+['marks','fmin','fmax','note'].forEach(id=>$(id).addEventListener('input',()=>{drawOv();if(id!=='marks'&&id!=='note')clear();}));
+$('fft').addEventListener('change',applyFFT);
+// 再生ファイル
+let url;
+function load(f){
+ if(!f)return;
+ if(url)URL.revokeObjectURL(url);
+ url=URL.createObjectURL(f);v.src=url;clear();setup();
+ v.play().catch(()=>{});
+}
+$('file').addEventListener('change',e=>load(e.target.files[0]));
+const drop=$('drop');
+['dragenter','dragover'].forEach(t=>document.addEventListener(t,e=>{e.preventDefault();drop.classList.add('over');}));
+['dragleave','drop'].forEach(t=>document.addEventListener(t,e=>{e.preventDefault();drop.classList.remove('over');}));
+document.addEventListener('drop',e=>load(e.dataTransfer.files[0]));
+v.addEventListener('play',()=>{setup();if(ac.state==='suspended')ac.resume();});
+v.addEventListener('seeked',clear);
+$('src').addEventListener('change',applySrc);
+$('preset').addEventListener('click',()=>{pmin=1e9;pmax=0;lastF=0;$('prange').textContent='';});
+$('mic').addEventListener('click',async()=>{
+ if(micNode){
+  micStream.getTracks().forEach(t=>t.stop());
+  micNode.disconnect();micNode=null;micStream=null;
+  $('mic').textContent='マイク開始';
+  if($('src').value!=='video'){$('src').value='video';applySrc();}
+  return;
+ }
+ try{
+  $('msg').textContent='';
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw new Error('マイク機能が使えない環境です');
+  setup();
+  if(ac.state==='suspended')await ac.resume();
+  micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+  micNode=ac.createMediaStreamSource(micStream);
+  micNode.connect(mg);
+  $('mic').textContent='マイク停止';
+  $('src').value='mic';applySrc();clear();
+ }catch(e){$('msg').textContent='マイクを開始できません: '+(e.name||'')+' '+(e.message||'')+'（この表示環境でマイクがブロックされている可能性があります）';}
+});
+drawOv();
+</script>
+</body>
+</html>
