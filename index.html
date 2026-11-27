@@ -49,6 +49,7 @@ small{opacity:.7}
 <label><input type="checkbox" id="note" checked>音名を表示</label>
 <label><input type="checkbox" id="pitch" checked>基音を表示</label>
 <label>基音しきい値(dB)<input type="number" id="pth" value="20" min="3"></label>
+<label>基音の選び方<select id="pmode"><option value="spl">音圧高い方優先</option><option value="hi">高い方優先</option><option value="lo">低い方優先</option></select></label>
 <button id="mic">マイク開始</button>
 <label>解析する音声<select id="src"><option value="video">動画</option><option value="mic">マイク</option><option value="mix">動画＋マイク</option></select></label>
 <span id="msg" style="color:#e5484d;font-size:13px"></span>
@@ -154,7 +155,22 @@ function detectS(lo,hi){
  }
  if(bk<0)return 0;
  const a=sc[bk-1]||0,b=sc[bk],c=sc[bk+1]||0,den=a-2*b+c;
- const f0=(den?bk+0.5*(a-c)/den:bk)*bh;
+ let f0=(den?bk+0.5*(a-c)/den:bk)*bh;
+ const mode=$('pmode').value;
+ if(mode!=='spl'){
+  const th2=+$('pth').value||20,mean2=sum/(k1-k0+1);
+  const pk2=x=>{const kc=Math.round(x);let m=-1e9;for(let i=kc-1;i<=kc+1;i++)if(i>0&&i<n&&data[i]>m)m=data[i];return m;};
+  const cs=[];
+  for(let k=k0+1;k<k1;k++){
+   if(sc[k]>sc[k-1]&&sc[k]>=sc[k+1]&&sc[k]>=0.3*best){
+    const a2=sc[k-1],b2=sc[k],c2=sc[k+1],d2=a2-2*b2+c2;
+    const f=(d2?k+0.5*(a2-c2)/d2:k)*bh,db=pk2(f/bh);
+    if(db>=mean2+th2&&db>=peak-25)cs.push(f);
+   }
+  }
+  const fs=cs.filter((f,i)=>!cs.some((l,j)=>{if(j===i||l>=f)return false;const r=f/l,q=Math.round(r);return q>=2&&q<=6&&Math.abs(r-q)<0.04;}));
+  if(fs.length)f0=mode==='hi'?Math.max(...fs):Math.min(...fs);
+ }
  // 範囲より下に本当の基音(1/2〜1/4)があれば、これは倍音なので除外
  const th=+$('pth').value||20,mean=sum/(k1-k0+1);
  const pk=x=>{const kc=Math.round(x);let m=-1e9;for(let i=kc-1;i<=kc+1;i++)if(i>0&&i<n&&data[i]>m)m=data[i];return m;};
@@ -166,7 +182,7 @@ function updatePitch(sp_,lo,hi){
  const f=detectS(lo,hi);
  if(!f){lastF=0;$('pnow').textContent='基音: ―';return;}
  const m=69+12*Math.log2(f/440),r=Math.round(m),c=Math.round((m-r)*100);
- $('pnow').textContent='基音: '+f.toFixed(1)+' Hz  '+noteLong(f)+' ('+(c>=0?'+':'')+c+'セント)';
+ $('pnow').textContent='基音: '+f.toFixed(1)+' Hz  '+noteName(f)+' ('+(c>=0?'+':'')+c+'セント)';
  const stable=lastF&&Math.abs(f/lastF-1)<0.03;lastF=f;
  if(stable){pmin=Math.min(pmin,f);pmax=Math.max(pmax,f);
   $('prange').textContent='最低 '+pmin.toFixed(1)+' Hz '+noteName(pmin)+' / 最高 '+pmax.toFixed(1)+' Hz '+noteName(pmax);}
@@ -176,18 +192,6 @@ requestAnimationFrame(frame);
 // オーバーレイ（マーク・カーソル）
 const names=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 function noteName(f){if(f<=0)return'';const m=Math.round(69+12*Math.log2(f/440));return names[((m%12)+12)%12]+(Math.floor(m/12)-1);}
-// 音名の別表記: E5 / E⁵ / E’’’’’ / hihihiE 、 ,,,,,C / lowlowlowlowC / C-1
-function noteLong(f){
- if(f<=0)return'';
- const m=Math.round(69+12*Math.log2(f/440)),o=Math.floor(m/12)-1,n=names[((m%12)+12)%12];
- const sup=String(o-3).replace(/-/g,'⁻').replace(/\d/g,d=>'⁰¹²³⁴⁵⁶⁷⁸⁹'[d]);
- const forms=[n+o];
- if(o>=4){forms.push(n+sup,n.toLowerCase()+'’'.repeat(o-3),...(o>4?[n+'’'.repeat(o-3)]:[]));}
- else{if(o===3)forms.push(n.toLowerCase());else{forms.push(','.repeat(Math.max(0,2-o))+n);if(o<2)forms.push(n[0].repeat(3-o)+n.slice(1));}}
- const g=Math.floor((m-45)/12);
- if(g<0)forms.push('low'.repeat(-g)+n);else if(g<2)forms.push('Mid'+(g+1)+n);else forms.push('hi'.repeat(g-1)+n);
- return forms.join(' / ');
-}
 let mouse=null;
 function drawOv(){
  octx.clearRect(0,0,W,H);
@@ -200,8 +204,8 @@ function drawOv(){
  if(mouse){
   const f=lo+(hi-lo)*(1-mouse.y/(H-1)),y=mouse.y;
   octx.strokeStyle='rgba(255,255,255,.7)';octx.setLineDash([4,4]);octx.beginPath();octx.moveTo(0,y);octx.lineTo(W,y);octx.stroke();octx.setLineDash([]);
-  const label=Math.round(f)+' Hz'+($('note').checked?'  '+noteLong(f):'');
-  octx.fillStyle='#fff';const tw=octx.measureText(label).width;octx.fillText(label,Math.max(4,Math.min(mouse.x+8,W-tw-6)),y<16?y+16:y-5);
+  const label=Math.round(f)+' Hz'+($('note').checked?'  '+noteName(f):'');
+  octx.fillStyle='#fff';octx.fillText(label,Math.min(mouse.x+8,W-110),y<16?y+16:y-5);
  }
 }
 ov.addEventListener('mousemove',e=>{const r=ov.getBoundingClientRect();mouse={x:(e.clientX-r.left)*W/r.width,y:(e.clientY-r.top)*H/r.height};drawOv();});
