@@ -33,7 +33,7 @@ small{opacity:.7}
 <div id="drop" class="card">動画・音声ファイルをここにドロップ、または
 <input type="file" id="file" accept="video/*,audio/*"></div>
 <div class="card"><video id="v" controls playsinline></video></div>
-<div class="card" id="pv"><span id="pnow" style="font-size:18px;font-weight:600">基音: ―</span>　<small id="prange"></small>　<button id="preset">範囲リセット</button></div>
+<div class="card" id="pv"><span id="pnow" style="font-size:18px;font-weight:600">基音: ―</span>　<small id="prange"></small>　<button id="preset">範囲リセット</button><div id="hold" style="margin-top:6px;font-size:14px">スペクトログラムをクリックすると、その時点の基音を何秒保てたかが出ます</div></div>
 <div class="card stage">
 <canvas id="sp" width="1100" height="320"></canvas>
 <canvas id="ov" width="1100" height="320"></canvas>
@@ -50,6 +50,8 @@ small{opacity:.7}
 <label><input type="checkbox" id="pitch" checked>基音を表示</label>
 <label>基音しきい値(dB)<input type="number" id="pth" value="20" min="3"></label>
 <label>基音の選び方<select id="pmode"><option value="spl">音圧高い方優先</option><option value="hi">高い方優先</option><option value="lo">低い方優先</option></select></label>
+<label>同じ基音とみなす幅(半音)<input type="number" id="htol" value="2" min="0.5" step="0.5"></label>
+<label>途切れ許容(秒)<input type="number" id="hgap" value="0.3" min="0" step="0.1"></label>
 <button id="mic">マイク開始</button>
 <label>解析する音声<select id="src"><option value="video">動画</option><option value="mic">マイク</option><option value="mix">動画＋マイク</option></select></label>
 <span id="msg" style="color:#e5484d;font-size:13px"></span>
@@ -60,6 +62,7 @@ const $=id=>document.getElementById(id);
 const v=$('v'),sp=$('sp'),ov=$('ov'),sctx=sp.getContext('2d'),octx=ov.getContext('2d');
 const W=sp.width,H=sp.height;
 let ac,an,data,srcNode,vg,mg,micNode,micStream,pa,tbuf;
+let segs=[],cur=null,scrollX=0;
 // カラーマップ
 const lut=[];
 (function(){const st=[[0,[0,0,0]],[.25,[40,0,110]],[.5,[190,30,90]],[.75,[250,160,20]],[1,[255,255,230]]];
@@ -95,7 +98,7 @@ function range(){
  let hi=+$('fmax').value||nyq;hi=Math.min(hi,nyq);
  return [Math.min(lo,hi-1),hi,nyq];
 }
-function clear(){sctx.fillStyle='#000';sctx.fillRect(0,0,W,H);}
+function clear(){sctx.fillStyle='#000';sctx.fillRect(0,0,W,H);segs=[];cur=null;}
 clear();
 function frame(){
  requestAnimationFrame(frame);
@@ -113,6 +116,7 @@ function frame(){
   for(let x=0;x<sp_;x++){const i=(y*sp_+x)*4;img.data[i]=c[0];img.data[i+1]=c[1];img.data[i+2]=c[2];img.data[i+3]=255;}
  }
  sctx.putImageData(img,W-sp_,0);
+ scrollX+=sp_;
  if($('pitch').checked&&++fc%2===0)updatePitch(sp_,lo,hi);
 }
 let fc=0,pmin=1e9,pmax=0,lastF=0;
@@ -178,10 +182,28 @@ function detectS(lo,hi){
  for(let d=2;d<=4;d++){const g=f0/d;if(g<30)break;const gd=pk(g/bh);if(gd>mean+th&&gd>f0db-15)return 0;}
  return f0;
 }
+// 基音の保持区間(幅・途切れ許容つき)
+function track(m,now){
+ const tol=+$('htol').value||2,gap=+$('hgap').value;
+ const g=isNaN(gap)?0.3:gap;
+ if(cur&&now-cur.t1<=g&&Math.abs(m-cur.lm)<=tol){cur.t1=now;cur.c1=scrollX;cur.lm=m;cur.sum+=m;cur.n++;}
+ else{if(cur)segs.push(cur);cur={t0:now,t1:now,c0:scrollX,c1:scrollX,lm:m,sum:m,n:1};}
+ while(segs.length&&segs[0].c1<scrollX-W-50)segs.shift();
+}
+ov.addEventListener('click',e=>{
+ const r=ov.getBoundingClientRect(),x=(e.clientX-r.left)*W/r.width,col=scrollX-(W-1-x),pad=8;
+ const all=cur?segs.concat([cur]):segs;
+ let hit=null,bd=1e9;
+ for(const s of all){const d=col<s.c0?s.c0-col:col>s.c1?col-s.c1:0;if(d<=pad&&d<bd){bd=d;hit=s;}}
+ if(!hit){$('hold').textContent='その位置に基音は検出されていません';return;}
+ const fm=440*Math.pow(2,(hit.sum/hit.n-69)/12);
+ $('hold').textContent='保持 '+(hit.t1-hit.t0).toFixed(2)+' 秒　平均 '+fm.toFixed(1)+' Hz  '+noteLong(fm);
+});
 function updatePitch(sp_,lo,hi){
  const f=detectS(lo,hi);
  if(!f){lastF=0;$('pnow').textContent='基音: ―';return;}
  const m=69+12*Math.log2(f/440),r=Math.round(m),c=Math.round((m-r)*100);
+ track(m,performance.now()/1000);
  $('pnow').textContent='基音: '+f.toFixed(1)+' Hz  '+noteLong(f)+' ('+(c>=0?'+':'')+c+'セント)';
  const stable=lastF&&Math.abs(f/lastF-1)<0.03;lastF=f;
  if(stable){pmin=Math.min(pmin,f);pmax=Math.max(pmax,f);
