@@ -62,7 +62,7 @@ const $=id=>document.getElementById(id);
 const v=$('v'),sp=$('sp'),ov=$('ov'),sctx=sp.getContext('2d'),octx=ov.getContext('2d');
 const W=sp.width,H=sp.height;
 let ac,an,data,srcNode,vg,mg,micNode,micStream,pa,tbuf;
-let segs=[],cur=null,scrollX=0,selSeg=null;
+let segs=[],cur=null,cand=null,scrollX=0,selSeg=null;
 const CY='#7fe3ff',YE='#ffd400';
 // カラーマップ
 const lut=[];
@@ -99,7 +99,7 @@ function range(){
  let hi=+$('fmax').value||nyq;hi=Math.min(hi,nyq);
  return [Math.min(lo,hi-1),hi,nyq];
 }
-function clear(){sctx.fillStyle='#000';sctx.fillRect(0,0,W,H);segs=[];cur=null;selSeg=null;}
+function clear(){sctx.fillStyle='#000';sctx.fillRect(0,0,W,H);segs=[];cur=null;cand=null;selSeg=null;}
 clear();
 function frame(){
  requestAnimationFrame(frame);
@@ -184,12 +184,21 @@ function detectS(lo,hi){
  return f0;
 }
 // 基音の保持区間(幅・途切れ許容つき)
+function mk(m,now){return{t0:now,t1:now,c0:scrollX,c1:scrollX,lm:m,sum:m,n:1,pts:[],sel:false};}
+function ext(q,m,now){q.t1=now;q.c1=scrollX;q.lm=m;q.sum+=m;q.n++;}
+// 幅の外に外れた検出は「途切れ」として扱い、許容時間内に幅の中へ戻れば同じ区間を続ける
 function track(m,now){
- const tol=+$('htol').value||2,gap=+$('hgap').value;
- const g=isNaN(gap)?0.3:gap;
- if(cur&&now-cur.t1<=g&&Math.abs(m-cur.lm)<=tol){cur.t1=now;cur.c1=scrollX;cur.lm=m;cur.sum+=m;cur.n++;}
- else{if(cur)segs.push(cur);cur={t0:now,t1:now,c0:scrollX,c1:scrollX,lm:m,sum:m,n:1,pts:[],sel:false};}
+ const tol=+$('htol').value||2,gv=+$('hgap').value,g=isNaN(gv)?0.3:gv;
+ if(cur&&now-cur.t1>g){segs.push(cur);cur=null;}
+ if(cand&&now-cand.t1>g){segs.push(cand);cand=null;}
+ if(!cur&&cand){cur=cand;cand=null;}
+ let r;
+ if(cur&&Math.abs(m-cur.lm)<=tol){ext(cur,m,now);if(cand){segs.push(cand);cand=null;}r=cur;}
+ else if(!cur){cur=mk(m,now);r=cur;}
+ else if(cand&&Math.abs(m-cand.lm)<=tol){ext(cand,m,now);r=cand;}
+ else{if(cand)segs.push(cand);cand=mk(m,now);r=cand;}
  while(segs.length&&segs[0].c1<scrollX-W-50)segs.shift();
+ return r;
 }
 function paint(s,col){sctx.fillStyle=col;for(const q of s.pts){const x=W-q.w-(scrollX-q.c);if(x>-q.w)sctx.fillRect(x,q.y,q.w,3);}}
 function paintSel(s){
@@ -198,7 +207,7 @@ function paintSel(s){
 }
 ov.addEventListener('click',e=>{
  const r=ov.getBoundingClientRect(),x=(e.clientX-r.left)*W/r.width,col=scrollX-(W-1-x),pad=8;
- const all=cur?segs.concat([cur]):segs;
+ const all=segs.concat(cur?[cur]:[],cand?[cand]:[]);
  let hit=null,bd=1e9;
  for(const s of all){const d=col<s.c0?s.c0-col:col>s.c1?col-s.c1:0;if(d<=pad&&d<bd){bd=d;hit=s;}}
  if(!hit){paintSel(null);$('hold').textContent='その位置に基音は検出されていません';return;}
@@ -210,12 +219,12 @@ function updatePitch(sp_,lo,hi){
  const f=detectS(lo,hi);
  if(!f){lastF=0;$('pnow').textContent='基音: ―';return;}
  const m=69+12*Math.log2(f/440),r=Math.round(m),c=Math.round((m-r)*100);
- track(m,performance.now()/1000);
+ const sg=track(m,performance.now()/1000);
  $('pnow').textContent='基音: '+f.toFixed(1)+' Hz  '+noteLong(f)+' ('+(c>=0?'+':'')+c+'セント)';
  const stable=lastF&&Math.abs(f/lastF-1)<0.03;lastF=f;
  if(stable){pmin=Math.min(pmin,f);pmax=Math.max(pmax,f);
   $('prange').textContent='最低 '+pmin.toFixed(1)+' Hz '+noteName(pmin)+' / 最高 '+pmax.toFixed(1)+' Hz '+noteName(pmax);}
- if(f>=lo&&f<=hi){const y=Math.round(H-1-(f-lo)/(hi-lo)*(H-1))-1;if(cur)cur.pts.push({c:scrollX,w:sp_*2,y});sctx.fillStyle=cur&&cur.sel?YE:CY;sctx.fillRect(W-sp_*2,y,sp_*2,3);}
+ if(f>=lo&&f<=hi){const y=Math.round(H-1-(f-lo)/(hi-lo)*(H-1))-1;if(sg)sg.pts.push({c:scrollX,w:sp_*2,y});sctx.fillStyle=sg&&sg.sel?YE:CY;sctx.fillRect(W-sp_*2,y,sp_*2,3);}
 }
 requestAnimationFrame(frame);
 // オーバーレイ（マーク・カーソル）
