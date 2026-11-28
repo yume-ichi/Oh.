@@ -56,6 +56,12 @@ small{opacity:.7}
 <label>解析する音声<select id="src"><option value="video">動画</option><option value="mic">マイク</option><option value="mix">動画＋マイク</option></select></label>
 <span id="msg" style="color:#e5484d;font-size:13px"></span>
 </div>
+<div class="card" id="recc">
+<label style="display:inline-flex"><input type="checkbox" id="recon" checked>マイク使用中は録音する</label>　
+<span id="rst">未録音</span>　<button id="rplay">ここまでを聞く</button>　<a id="rdl" download style="display:none">録音を保存</a>
+<audio id="ra" controls style="width:100%;margin-top:6px"></audio>
+<small>※スピーカーで再生するとマイクに入り込みます。聞くときは録音を止めるかイヤホンを使ってください</small>
+</div>
 </main>
 <script>
 const $=id=>document.getElementById(id);
@@ -279,8 +285,37 @@ v.addEventListener('play',()=>{setup();if(ac.state==='suspended')ac.resume();});
 v.addEventListener('seeked',clear);
 $('src').addEventListener('change',applySrc);
 $('preset').addEventListener('click',()=>{pmin=1e9;pmax=0;lastF=0;$('prange').textContent='';});
+// 録音(聞き逃し回避)
+let rec=null,rchunks=[],rurl=null,rt0=0,rtimer=0;
+function recStart(){
+ rchunks=[];rec=null;
+ if(!$('recon').checked||!window.MediaRecorder||!micStream)return;
+ try{rec=new MediaRecorder(micStream);}catch(e){rec=null;return;}
+ rec.ondataavailable=e=>{if(e.data&&e.data.size)rchunks.push(e.data);};
+ rec.onstop=()=>{clearInterval(rtimer);recShow();$('rst').textContent='録音完了 '+fmt((Date.now()-rt0)/1000);};
+ rec.start(1000);rt0=Date.now();
+ clearInterval(rtimer);rtimer=setInterval(()=>{$('rst').textContent='● 録音中 '+fmt((Date.now()-rt0)/1000);},500);
+}
+function fmt(t){t=Math.floor(t);return Math.floor(t/60)+':'+String(t%60).padStart(2,'0');}
+function recShow(){
+ if(!rchunks.length)return;
+ const mt=(rec&&rec.mimeType)||'audio/webm';
+ const b=new Blob(rchunks,{type:mt});
+ if(rurl)URL.revokeObjectURL(rurl);
+ rurl=URL.createObjectURL(b);
+ const ra=$('ra'),keep=ra.paused?0:ra.currentTime;
+ ra.src=rurl;
+ const dl=$('rdl'),ext=/mp4/.test(mt)?'m4a':/ogg/.test(mt)?'ogg':'webm';
+ dl.href=rurl;dl.download='rec-'+new Date().toISOString().replace(/[:.]/g,'-')+'.'+ext;dl.style.display='';
+ return keep;
+}
+$('rplay').addEventListener('click',()=>{
+ const go=()=>{recShow();const ra=$('ra');ra.currentTime=0;ra.play().catch(()=>{});};
+ if(rec&&rec.state==='recording'){rec.requestData();setTimeout(go,300);}else go();
+});
 $('mic').addEventListener('click',async()=>{
  if(micNode){
+  if(rec&&rec.state!=='inactive')rec.stop();
   micStream.getTracks().forEach(t=>t.stop());
   micNode.disconnect();micNode=null;micStream=null;
   $('mic').textContent='マイク開始';
@@ -295,6 +330,7 @@ $('mic').addEventListener('click',async()=>{
   micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
   micNode=ac.createMediaStreamSource(micStream);
   micNode.connect(mg);
+  recStart();
   $('mic').textContent='マイク停止';
   $('src').value='mic';applySrc();clear();
  }catch(e){$('msg').textContent='マイクを開始できません: '+(e.name||'')+' '+(e.message||'')+'（この表示環境でマイクがブロックされている可能性があります）';}
