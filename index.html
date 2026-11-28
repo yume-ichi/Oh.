@@ -62,7 +62,8 @@ const $=id=>document.getElementById(id);
 const v=$('v'),sp=$('sp'),ov=$('ov'),sctx=sp.getContext('2d'),octx=ov.getContext('2d');
 const W=sp.width,H=sp.height;
 let ac,an,data,srcNode,vg,mg,micNode,micStream,pa,tbuf;
-let segs=[],cur=null,scrollX=0;
+let segs=[],cur=null,scrollX=0,selSeg=null;
+const CY='#7fe3ff',YE='#ffd400';
 // カラーマップ
 const lut=[];
 (function(){const st=[[0,[0,0,0]],[.25,[40,0,110]],[.5,[190,30,90]],[.75,[250,160,20]],[1,[255,255,230]]];
@@ -98,7 +99,7 @@ function range(){
  let hi=+$('fmax').value||nyq;hi=Math.min(hi,nyq);
  return [Math.min(lo,hi-1),hi,nyq];
 }
-function clear(){sctx.fillStyle='#000';sctx.fillRect(0,0,W,H);segs=[];cur=null;}
+function clear(){sctx.fillStyle='#000';sctx.fillRect(0,0,W,H);segs=[];cur=null;selSeg=null;}
 clear();
 function frame(){
  requestAnimationFrame(frame);
@@ -187,15 +188,21 @@ function track(m,now){
  const tol=+$('htol').value||2,gap=+$('hgap').value;
  const g=isNaN(gap)?0.3:gap;
  if(cur&&now-cur.t1<=g&&Math.abs(m-cur.lm)<=tol){cur.t1=now;cur.c1=scrollX;cur.lm=m;cur.sum+=m;cur.n++;}
- else{if(cur)segs.push(cur);cur={t0:now,t1:now,c0:scrollX,c1:scrollX,lm:m,sum:m,n:1};}
+ else{if(cur)segs.push(cur);cur={t0:now,t1:now,c0:scrollX,c1:scrollX,lm:m,sum:m,n:1,pts:[],sel:false};}
  while(segs.length&&segs[0].c1<scrollX-W-50)segs.shift();
+}
+function paint(s,col){sctx.fillStyle=col;for(const q of s.pts){const x=W-q.w-(scrollX-q.c);if(x>-q.w)sctx.fillRect(x,q.y,q.w,3);}}
+function paintSel(s){
+ if(selSeg&&selSeg!==s){selSeg.sel=false;paint(selSeg,CY);}
+ selSeg=s;if(s){s.sel=true;paint(s,YE);}
 }
 ov.addEventListener('click',e=>{
  const r=ov.getBoundingClientRect(),x=(e.clientX-r.left)*W/r.width,col=scrollX-(W-1-x),pad=8;
  const all=cur?segs.concat([cur]):segs;
  let hit=null,bd=1e9;
  for(const s of all){const d=col<s.c0?s.c0-col:col>s.c1?col-s.c1:0;if(d<=pad&&d<bd){bd=d;hit=s;}}
- if(!hit){$('hold').textContent='その位置に基音は検出されていません';return;}
+ if(!hit){paintSel(null);$('hold').textContent='その位置に基音は検出されていません';return;}
+ paintSel(hit);
  const fm=440*Math.pow(2,(hit.sum/hit.n-69)/12);
  $('hold').textContent='保持 '+(hit.t1-hit.t0).toFixed(2)+' 秒　平均 '+fm.toFixed(1)+' Hz  '+noteLong(fm);
 });
@@ -208,7 +215,7 @@ function updatePitch(sp_,lo,hi){
  const stable=lastF&&Math.abs(f/lastF-1)<0.03;lastF=f;
  if(stable){pmin=Math.min(pmin,f);pmax=Math.max(pmax,f);
   $('prange').textContent='最低 '+pmin.toFixed(1)+' Hz '+noteName(pmin)+' / 最高 '+pmax.toFixed(1)+' Hz '+noteName(pmax);}
- if(f>=lo&&f<=hi){const y=H-1-(f-lo)/(hi-lo)*(H-1);sctx.fillStyle='#7fe3ff';sctx.fillRect(W-sp_*2,Math.round(y)-1,sp_*2,3);}
+ if(f>=lo&&f<=hi){const y=Math.round(H-1-(f-lo)/(hi-lo)*(H-1))-1;if(cur)cur.pts.push({c:scrollX,w:sp_*2,y});sctx.fillStyle=cur&&cur.sel?YE:CY;sctx.fillRect(W-sp_*2,y,sp_*2,3);}
 }
 requestAnimationFrame(frame);
 // オーバーレイ（マーク・カーソル）
