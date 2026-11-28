@@ -236,7 +236,7 @@ function noteLong(f){
  const m=Math.round(69+12*Math.log2(f/440)),o=Math.floor(m/12)-1,n=names[((m%12)+12)%12];
  const sup=String(o-3).replace(/-/g,'⁻').replace(/\d/g,d=>'⁰¹²³⁴⁵⁶⁷⁸⁹'[d]);
  const forms=[n+o];
- if(o>=4){forms.push(n+sup,n.toLowerCase()+'’'.repeat(o-3),...(o>4?[n+'’'.repeat(o-3)]:[]));}
+ if(o>=4){forms.push(n+sup,n.toLowerCase()+'’'.repeat(o-3));}
  else{if(o===3)forms.push(n.toLowerCase());else{forms.push(','.repeat(Math.max(0,2-o))+n);if(o<2)forms.push(n[0].repeat(3-o)+n.slice(1));}}
  const g=Math.floor((m-45)/12);
  if(g<0)forms.push('low'.repeat(-g)+n);else if(g<2)forms.push('Mid'+(g+1)+n);else forms.push('hi'.repeat(g-1)+n);
